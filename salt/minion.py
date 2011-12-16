@@ -3,6 +3,8 @@ Routines to set up a minion
 '''
 
 # Import python libs
+import BaseHTTPServer
+import contextlib
 import glob
 import logging
 import multiprocessing
@@ -13,6 +15,8 @@ import tempfile
 import threading
 import time
 import traceback
+import urllib2
+import urlparse
 
 # Import zeromq libs
 import zmq
@@ -25,6 +29,7 @@ import salt.loader
 import salt.modules
 import salt.returners
 import salt.utils
+import salt.payload
 
 log = logging.getLogger(__name__)
 
@@ -77,6 +82,7 @@ class Minion(object):
         Pass in the options dict
         '''
         self.opts = opts
+        self.serial = salt.payload.Serial(self.opts)
         self.mod_opts = self.__prep_mod_opts()
         self.functions, self.returners = self.__load_modules()
         self.matcher = Matcher(self.opts, self.functions)
@@ -290,7 +296,7 @@ class Minion(object):
         except KeyError:
             pass
         payload['load'] = self.crypticle.dumps(load)
-        socket.send_pyobj(payload)
+        socket.send(self.serial.dumps(payload))
         return socket.recv()
 
     def authenticate(self):
@@ -311,7 +317,7 @@ class Minion(object):
             time.sleep(10)
         self.aes = creds['aes']
         self.publish_port = creds['publish_port']
-        self.crypticle = salt.crypt.Crypticle(self.aes)
+        self.crypticle = salt.crypt.Crypticle(self.opts, self.aes)
 
     def passive_refresh(self):
         '''
@@ -349,7 +355,7 @@ class Minion(object):
             while True:
                 payload = None
                 try:
-                    payload = socket.recv_pyobj(1)
+                    payload = self.serial.loads(socket.recv(1))
                     self._handle_payload(payload)
                     last = time.time()
                 except:
@@ -369,7 +375,7 @@ class Minion(object):
             while True:
                 payload = None
                 try:
-                    payload = socket.recv_pyobj(1)
+                    payload = self.serial(socket.recv(1))
                     self._handle_payload(payload)
                 except:
                     pass
@@ -579,6 +585,7 @@ class FileClient(object):
     '''
     def __init__(self, opts):
         self.opts = opts
+        self.serial = salt.payload.Serial(self.opts)
         self.auth = salt.crypt.SAuth(opts)
         self.socket = self.__get_socket()
 
@@ -623,8 +630,8 @@ class FileClient(object):
             else:
                 load['loc'] = fn_.tell()
             payload['load'] = self.auth.crypticle.dumps(load)
-            self.socket.send_pyobj(payload)
-            data = self.auth.crypticle.loads(self.socket.recv_pyobj())
+            self.socket.send(self.serial.dumps(payload))
+            data = self.auth.crypticle.loads(self.serial.loads(self.socket.recv()))
             if not data['data']:
                 break
             if not fn_:
@@ -640,6 +647,32 @@ class FileClient(object):
                 fn_ = open(dest, 'w+')
             fn_.write(data['data'])
         return dest
+
+    def get_url(self, url, dest, makedirs=False, env='base'):
+        '''
+        Get a single file from a URL.
+        '''
+        if urlparse.urlparse(url).scheme == 'salt':
+            return self.get_file(url, dest, makedirs, env)
+        destdir = os.path.dirname(dest)
+        if not os.path.isdir(destdir):
+            if makedirs:
+                os.makedirs(destdir)
+            else:
+                return False
+        try:
+            with contextlib.closing(urllib2.urlopen(url)) as srcfp:
+                with open(dest, 'wb') as destfp:
+                    shutil.copyfileobj(srcfp, destfp)
+            return dest
+        except urllib2.HTTPError, ex:
+            raise MinionError('HTTP error {0} reading {1}: {3}'.format(
+                    ex.code,
+                    url,
+                    *BaseHTTPServer.BaseHTTPRequestHandler.responses[ex.code]))
+        except urllib2.URLError, ex:
+            raise MinionError('Error reading {0}: {1}'.format(url, ex.reason))
+        return False
 
     def cache_file(self, path, env='base'):
         '''
@@ -686,8 +719,8 @@ class FileClient(object):
         load = {'env': env,
                 'cmd': '_file_list'}
         payload['load'] = self.auth.crypticle.dumps(load)
-        self.socket.send_pyobj(payload)
-        return self.auth.crypticle.loads(self.socket.recv_pyobj())
+        self.socket.send(self.serial.dumps(payload))
+        return self.auth.crypticle.loads(self.serial.loads(self.socket.recv()))
 
     def hash_file(self, path, env='base'):
         '''
@@ -701,8 +734,8 @@ class FileClient(object):
                 'env': env,
                 'cmd': '_file_hash'}
         payload['load'] = self.auth.crypticle.dumps(load)
-        self.socket.send_pyobj(payload)
-        return self.auth.crypticle.loads(self.socket.recv_pyobj())
+        self.socket.send(self.serial.dumps(payload))
+        return self.auth.crypticle.loads(self.serial.loads(self.socket.recv()))
 
     def list_env(self, path, env='base'):
         '''
@@ -712,8 +745,8 @@ class FileClient(object):
         load = {'env': env,
                 'cmd': '_file_list'}
         payload['load'] = self.auth.crypticle.dumps(load)
-        self.socket.send_pyobj(payload)
-        return self.auth.crypticle.loads(self.socket.recv_pyobj())
+        self.socket.send(self.serial.dumps(payload))
+        return self.auth.crypticle.loads(self.serial.loads(self.socket.recv()))
 
     def get_state(self, sls, env):
         '''
@@ -736,5 +769,5 @@ class FileClient(object):
         payload = {'enc': 'aes'}
         load = {'cmd': '_master_opts'}
         payload['load'] = self.auth.crypticle.dumps(load)
-        self.socket.send_pyobj(payload)
-        return self.auth.crypticle.loads(self.socket.recv_pyobj())
+        self.socket.send(self.serial.dumps(payload))
+        return self.auth.crypticle.loads(self.serial.loads(self.socket.recv()))
