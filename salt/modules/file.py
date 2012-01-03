@@ -208,7 +208,7 @@ def get_sum(path, form='md5'):
 
     CLI Example::
 
-        salt '*' /etc/passwd sha512
+        salt '*' file.get_sum /etc/passwd sha512
     '''
     if not os.path.isfile(path):
         return 'File not found'
@@ -311,9 +311,9 @@ def find(path, *opts):
 
     CLI Examples::
 
-        salt '*' / type=f name=\*.bak size=+10m
-        salt '*' /var mtime=+30d size=+10m print=path,size,mtime
-        salt '*' /var/log name=\*.[0-9] mtime=+30d size=+10m delete
+        salt '*' file.find / type=f name=\*.bak size=+10m
+        salt '*' file.find /var mtime=+30d size=+10m print=path,size,mtime
+        salt '*' file.find /var/log name=\*.[0-9] mtime=+30d size=+10m delete
     '''
     opts_dict = {}
     for opt in opts:
@@ -424,8 +424,8 @@ def comment(path, regex, char='#', backup='.bak'):
         The full path to the file to be edited
     regex
         A regular expression used to find the lines that are to be commented;
-        this pattern will be wrapped in parenthasis and will move any
-        preceeding/trailing ``^`` or ``$`` characters outside the parenthasis
+        this pattern will be wrapped in parenthesis and will move any
+        preceding/trailing ``^`` or ``$`` characters outside the parenthesis
         (e.g., the pattern ``^foo$`` will be rewritten as ``^(foo)$``)
     char : ``#``
         The character to be inserted at the beginning of a line in order to

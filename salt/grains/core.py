@@ -15,11 +15,15 @@ as those returned here
 
 import os
 import socket
-import subprocess
 import sys
 import re
 import platform
 import salt.utils
+
+# Solve the Chicken and egg problem where grains need to run before any
+# of the modules are loaded and are generally available for any usage.
+import salt.modules.cmd
+__salt__ = {'cmd.run': salt.modules.cmd._run_quiet}
 
 
 def _kernel():
@@ -29,20 +33,32 @@ def _kernel():
     # Provides:
     # kernel
     grains = {}
-    grains['kernel'] = subprocess.Popen(['uname', '-s'],
-        stdout=subprocess.PIPE).communicate()[0].strip()
+    grains['kernel'] = __salt__['cmd.run']('uname -s').strip()
+
     if grains['kernel'] == 'aix':
-        grains['kernelrelease'] = subprocess.Popen(['oslevel', '-s'],
-            stdout=subprocess.PIPE).communicate()[0].strip()
+        grains['kernelrelease'] = __salt__['cmd.run']('oslevel -s').strip()
     else:
-        grains['kernelrelease'] = subprocess.Popen(['uname', '-r'],
-            stdout=subprocess.PIPE).communicate()[0].strip()
+        grains['kernelrelease'] = __salt__['cmd.run']('uname -r').strip()
     if 'kernel' not in grains:
         grains['kernel'] = 'Unknown'
     if not grains['kernel']:
         grains['kernel'] = 'Unknown'
     return grains
 
+def _windows_cpudata():
+    '''
+    Return the cpu information for Windows systems architecture
+    '''
+    # Provides:
+    #   cpuarch
+    #   num_cpus
+    #   cpu_model
+    grains = {}
+    grains['cpuarch'] = platform.machine()
+    if 'NUMBER_OF_PROCESSORS' in os.environ:
+        grains['num_cpus'] = os.environ['NUMBER_OF_PROCESSORS']
+    grains['cpu_model'] = platform.processor()
+    return grains
 
 def _linux_cpudata():
     '''
@@ -56,10 +72,17 @@ def _linux_cpudata():
     grains = {}
     cpuinfo = '/proc/cpuinfo'
     # Grab the Arch
-    arch = subprocess.Popen(['uname', '-m'],
-            stdout=subprocess.PIPE).communicate()[0].strip()
+    arch = __salt__['cmd.run']('uname -m').strip()
     grains['cpuarch'] = arch
-    if not grains['cpuarch']:
+    # Some systems such as Debian don't like uname -m
+    # so fallback gracefully to the processor type
+    if not grains['cpuarch'] or grains['cpuarch'] == 'unknown':
+        arch = __salt__['cmd.run']('uname -p')
+        grains['cpuarch'] = arch
+    if not grains['cpuarch'] or grains['cpuarch'] == 'unknown':
+        arch = __salt__['cmd.run']('uname -i')
+        grains['cpuarch'] = arch
+    if not grains['cpuarch'] or grains['cpuarch'] == 'unknown':
         grains['cpuarch'] = 'Unknown'
     # Parse over the cpuinfo file
     if os.path.isfile(cpuinfo):
@@ -87,24 +110,15 @@ def _freebsd_cpudata():
     Return cpu information for FreeBSD systems
     '''
     grains = {}
-    sysctl = salt.utils.which("sysctl")
+    sysctl = salt.utils.which('sysctl')
 
     if sysctl:
-        grains['cpuarch'] = subprocess.Popen(
-                '{0} -n hw.machine'.format(sysctl),
-                shell=True,
-                stdout=subprocess.PIPE
-        ).communicate()[0].strip()
-        grains['num_cpus'] = subprocess.Popen(
-                '{0} -n hw.ncpu'.format(sysctl),
-                shell=True,
-                stdout=subprocess.PIPE
-        ).communicate()[0].strip()
-        grains['cpu_model'] = subprocess.Popen(
-                '{0} -n hw.model'.format(sysctl),
-                shell=True,
-                stdout=subprocess.PIPE
-        ).communicate()[0].strip()
+        machine_cmd = '{0} -n hw.machine'.format(sysctl)
+        ncpu_cmd    = '{0} -n hw.ncpu'.format(sysctl)
+        model_cpu   = '{0} -n hw.model'.format(sysctl)
+        grains['num_cpus'] = __salt__['cmd.run'](ncpu_cmd).strip()
+        grains['cpu_model'] = __salt__['cmd.run'](model_cpu).strip()
+        grains['cpuarch'] = __salt__['cmd.run'](machine_cmd).strip()
         grains['cpu_flags'] = []
     return grains
 
@@ -127,14 +141,18 @@ def _memdata(osdata):
                 if comps[0].strip() == 'MemTotal':
                     grains['mem_total'] = int(comps[1].split()[0]) / 1024
     elif osdata['kernel'] in ('FreeBSD','OpenBSD'):
-        sysctl = salt.utils.which("sysctl")
+        sysctl = salt.utils.which('sysctl')
         if sysctl:
-            mem = subprocess.Popen(
-                    '{0} -n hw.physmem'.format(sysctl),
-                    shell=True,
-                    stdout=subprocess.PIPE
-            ).communicate()[0].strip()
-        grains['mem_total'] = str(int(mem) / 1024 / 1024)
+            mem = __salt__['cmd.run']('{0} -n hw.physmem'.format(sysctl)).strip()
+            grains['mem_total'] = str(int(mem) / 1024 / 1024)
+    elif osdata['kernel'] == 'Windows':
+       for line in __salt__['cmd.run']('SYSTEMINFO /FO LIST').split('\n'):
+           comps = line.split(':')
+           if not len(comps) > 1:
+               continue
+           if comps[0].strip() == 'Total Physical Memory':
+               grains['mem_total'] = int(comps[1].split()[0].replace(',', ''))
+               break
 
     return grains
 
@@ -148,14 +166,11 @@ def _virtual(osdata):
     # Provides:
     #   virtual
     grains = {'virtual': 'physical'}
-    lspci = salt.utils.which("lspci")
-    dmidecode = salt.utils.which("dmidecode")
+    lspci = salt.utils.which('lspci')
+    dmidecode = salt.utils.which('dmidecode')
 
     if dmidecode:
-        output=subprocess.Popen(dmidecode,
-                shell=True,
-                stdout=subprocess.PIPE
-        ).communicate()[0].lower()
+        output = __salt__['cmd.run']('dmidecode')
         # Product Name: VirtualBox
         if 'Vendor: QEMU' in output:
             # FIXME: Make this detect between kvm or qemu
@@ -171,10 +186,7 @@ def _virtual(osdata):
             grains['virtual'] = 'VirtualPC'
     # Fall back to lspci if dmidecode isn't available
     elif lspci:
-        model=subprocess.Popen(lspci,
-                shell=True,
-                stdout=subprocess.PIPE
-        ).communicate()[0].lower()
+        model = __salt__['cmd.run']('lspci').lower()
         if 'vmware' in model:
             grains['virtual'] = 'VMware'
         # 00:04.0 System peripheral: InnoTek Systemberatung GmbH VirtualBox Guest Service
@@ -182,7 +194,7 @@ def _virtual(osdata):
             grains['virtual'] = 'VirtualBox'
         elif 'qemu' in model:
             grains['virtual'] = 'kvm'
-    choices =  ['Linux', 'OpenBSD', 'SunOS', 'HP-UX']
+    choices =  ('Linux', 'OpenBSD', 'SunOS', 'HP-UX')
     isdir = os.path.isdir
     if osdata['kernel'] in choices:
         if isdir('/proc/vz'):
@@ -205,13 +217,9 @@ def _virtual(osdata):
             if 'QEMU Virtual CPU' in open('/proc/cpuinfo', 'r').read():
                 grains['virtual'] = 'kvm'
     elif osdata['kernel'] == 'FreeBSD':
-        sysctl = salt.utils.which("sysctl")
+        sysctl = salt.utils.which('sysctl')
         if sysctl:
-            model = subprocess.Popen(
-                    '{0} hw.model'.format(sysctl),
-                    shell=True,
-                    stdout=subprocess.PIPE
-            ).communicate()[0].split(':')[1].strip()
+            model = __salt__['cmd.run']('{0} hw.model'.format(sysctl)).strip()
         if 'QEMU Virtual CPU' in model:
             grains['virtual'] = 'kvm'
     return grains
@@ -222,8 +230,11 @@ def _ps(osdata):
     Return the ps grain
     '''
     grains = {}
-    grains['ps'] = 'ps auxwww' if \
-            'FreeBSD NetBSD OpenBSD Darwin'.count(osdata['os']) else 'ps -efH'
+    bsd_choices = ('FreeBSD', 'NetBSD', 'OpenBSD', 'Darwin')
+    if osdata['os'] in bsd_choices:
+        grains['ps'] = 'ps auxwww'
+    else:
+        grains['ps'] = 'ps -efH'
     return grains
 
 
@@ -245,12 +256,36 @@ def _linux_platform_data(osdata):
         grains['oscodename'] = oscodename
     return grains
 
+def _windows_platform_data(osdata):
+    '''
+    Use the platform module for as much as we can.
+    '''
+    # Provides:
+    #    osrelease
+    #    oscodename
+    grains = {}
+    (osname, hostname, osrelease, osversion, machine, processor) = platform.uname()
+    if 'os' not in osdata and osname:
+        grains['os'] = osname
+    if osrelease:
+        grains['osrelease'] = osrelease
+    if osversion:
+        grains['osversion'] = osversion
+    return grains
 
 def os_data():
     '''
     Return grains pertaining to the operating system
     '''
     grains = {}
+    if 'os' in os.environ:
+        if os.environ['os'].startswith('Windows'):
+            grains['os'] = 'Windows'
+            grains['kernel'] = 'Windows'
+            grains.update(_memdata(grains))
+            grains.update(_windows_platform_data(grains))
+            grains.update(_windows_cpudata())
+            return grains
     grains.update(_kernel())
 
     if grains['kernel'] == 'Linux':
@@ -258,12 +293,12 @@ def os_data():
         if os.path.isfile('/etc/lsb-release'):
             for line in open('/etc/lsb-release').readlines():
                 # Matches any possible format:
-                #     DISTRIB_ID=Ubuntu
-                #     DISTRIB_ID="Mageia"
-                #     DISTRIB_ID='Fedora'
-                #     DISTRIB_RELEASE=10.10
-                #     DISTRIB_CODENAME=squeeze
-                #     DISTRIB_DESCRIPTION="Ubuntu 10.10"
+                #     DISTRIB_ID="Ubuntu"
+                #     DISTRIB_ID='Mageia'
+                #     DISTRIB_ID=Fedora
+                #     DISTRIB_RELEASE='10.10'
+                #     DISTRIB_CODENAME='squeeze'
+                #     DISTRIB_DESCRIPTION='Ubuntu 10.10'
                 regex = re.compile('^(DISTRIB_(?:ID|RELEASE|CODENAME|DESCRIPTION))=(?:\'|")?([\w\s\.-_]+)(?:\'|")?')
                 match = regex.match(line)
                 if match:
@@ -273,11 +308,11 @@ def os_data():
             grains['os'] = 'Arch'
         elif os.path.isfile('/etc/debian_version'):
             grains['os'] = 'Debian'
-            if "lsb_distrib_id" in grains:
-                if "Ubuntu" in grains['lsb_distrib_id']:
+            if 'lsb_distrib_id' in grains:
+                if 'Ubuntu' in grains['lsb_distrib_id']:
                     grains['os'] = 'Ubuntu'
-                elif os.path.isfile("/etc/issue.net") and \
-                  "Ubuntu" in open("/etc/issue.net").readline():
+                elif os.path.isfile('/etc/issue.net') and \
+                  'Ubuntu' in open('/etc/issue.net').readline():
                     grains['os'] = 'Ubuntu'
         elif os.path.isfile('/etc/gentoo-release'):
             grains['os'] = 'Gentoo'
@@ -342,9 +377,13 @@ def os_data():
         grains.update(_freebsd_cpudata())
 
     grains.update(_memdata(grains))
+
     # Load the virtual machine info
     grains.update(_virtual(grains))
     grains.update(_ps(grains))
+
+    # Get the hardware and bios data
+    grains.update(_hw_data(grains))
 
     return grains
 
@@ -383,7 +422,7 @@ def pythonversion():
     '''
     # Provides:
     #   pythonversion
-    return {'pythonversion': list(sys.version_info)}
+    return {'pythonversion': tuple(sys.version_info)}
 
 def pythonpath():
     '''
@@ -401,3 +440,84 @@ def saltpath():
     #   saltpath
     path = os.path.abspath(os.path.join(__file__, os.path.pardir))
     return {'saltpath': os.path.dirname(path)}
+
+
+# Relatively complex mini-algorithm to iterate over the various
+# sections of dmidecode output and return matches for  specific
+# lines containing data we want, but only in the right section.
+def _dmidecode_data(regex_dict):
+    '''
+    Parse the output of dmidecode in a generic fashion that can
+    be used for the multiple system types which have dmidecode.
+    '''
+    # NOTE: This function might gain support for smbios instead
+    #       of dmidecode when salt gets working Solaris support
+    ret = {}
+
+    # No use running if dmidecode isn't in the path
+    if not salt.utils.which('dmidecode'):
+        return ret
+
+    out = __salt__['cmd.run']('dmidecode')
+
+    for section in regex_dict:
+        section_found = False
+
+        # Look at every line for the right section
+        for line in out.split('\n'):
+            if not line: continue
+            # We've found it, woohoo!
+            if re.match(section, line):
+                section_found = True
+                continue
+            if not section_found:
+                continue
+
+            # Now that a section has been found, find the data
+            for item in regex_dict[section]:
+                # Examples:
+                #    Product Name: 64639SU
+                #    Version: 7LETC1WW (2.21 )
+                regex = re.compile('\s+{0}\s+(.*)$'.format(item))
+                grain = regex_dict[section][item]
+                # Skip to the next iteration if this grain
+                # has been found in the dmidecode output.
+                if grain in ret: continue
+
+                match = regex.match(line)
+
+                # Finally, add the matched data to the grains returned
+                if match:
+                    ret[grain] = match.group(1).strip()
+    return ret
+
+
+def _hw_data(osdata):
+    '''
+    Get system specific hardware data from dmidecode
+
+    Provides
+        biosversion
+        productname
+        manufacturer
+        serialnumber
+        biosreleasedate
+
+    .. versionadded:: 0.9.5
+    '''
+    grains = {}
+    # TODO: *BSD dmidecode output
+    if osdata['kernel'] == 'Linux':
+        linux_dmi_regex = {
+            'BIOS [Ii]nformation': {
+                '[Vv]ersion:': 'biosversion',
+                '[Rr]elease [Dd]ate:': 'biosreleasedate',
+            },
+            '[Ss]ystem [Ii]nformation': {
+                'Manufacturer:': 'manufacturer',
+                'Product(?: Name)?:': 'productname',
+                'Serial Number:': 'serialnumber',
+            },
+        }
+        grains.update(_dmidecode_data(linux_dmi_regex))
+    return grains

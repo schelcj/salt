@@ -18,6 +18,7 @@ import salt.output
 import salt.runner
 
 from salt import __version__ as VERSION
+from salt.exceptions import SaltInvocationError
 
 
 class SaltCMD(object):
@@ -245,16 +246,20 @@ class SaltCMD(object):
 
             if self.opts['return']:
                 args.append(self.opts['return'])
-            full_ret = local.cmd_full_return(*args)
-            ret, out = self._format_ret(full_ret)
+            try:
+                full_ret = local.cmd_full_return(*args)
+                ret, out = self._format_ret(full_ret)
+            except SaltInvocationError as exc:
+                ret = exc
+                out = ''
 
             # Handle special case commands
             if self.opts['fun'] == 'sys.doc':
                 self._print_docs(ret)
             else:
+                # Determine the proper output method and run it
+                get_outputter = salt.output.get_outputter
                 if isinstance(ret, list) or isinstance(ret, dict):
-                    # Determine the proper output method and run it
-                    get_outputter = salt.output.get_outputter
                     if self.opts['raw_out']:
                         printout = get_outputter('raw')
                     elif self.opts['json_out']:
@@ -267,8 +272,14 @@ class SaltCMD(object):
                         printout = get_outputter(out)
                     else:
                         printout = get_outputter(None)
+                elif isinstance(ret, SaltInvocationError):
+                    # Pretty print invocation errors
+                    printout = get_outputter("txt")
+                printout(ret)
 
-                    printout(ret)
+                # Always exit with a return code of 1 on issues
+                if isinstance(ret, Exception):
+                    sys.exit(1)
 
     def _format_ret(self, full_ret):
         '''
@@ -462,7 +473,9 @@ class SaltKey(object):
                 default=2048,
                 type=int,
                 help=('Set the keysize for the generated key, only works with '
-                      'the "--gen-keys" option; default=2048'))
+                      'the "--gen-keys" option, the key size must be 2048 or '
+                      'higher, otherwise it will be rounded up to 2048'
+                      '; default=2048'))
 
         parser.add_option('-c',
                 '--config',
@@ -483,7 +496,10 @@ class SaltKey(object):
         opts['delete'] = options.delete
         opts['gen_keys'] = options.gen_keys
         opts['gen_keys_dir'] = options.gen_keys_dir
-        opts['keysize'] = options.keysize
+        if options.keysize < 2048:
+            opts['keysize'] = 2048
+        else:
+            opts['keysize'] = options.keysize
 
         opts.update(salt.config.master_config(options.config))
 

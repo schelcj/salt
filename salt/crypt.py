@@ -1,5 +1,5 @@
 '''
-The crypt module manages all of the cyptogophy functions for minions and
+The crypt module manages all of the cryptography functions for minions and
 masters, encrypting and decrypting payloads, preparing messages, and
 authenticating peers
 '''
@@ -22,6 +22,7 @@ import zmq
 # Import salt utils
 import salt.payload
 import salt.utils
+from salt.exceptions import AuthenticationError
 
 log = logging.getLogger(__name__)
 
@@ -41,7 +42,9 @@ def gen_keys(keydir, keyname, keysize):
     priv = '{0}.pem'.format(base)
     pub = '{0}.pub'.format(base)
     gen = RSA.gen_key(keysize, 1)
+    cumask = os.umask(191)
     gen.save_key(priv, callback=foo_pass)
+    os.umask(cumask)
     gen.save_pub_key(pub)
     key = RSA.load_key(priv, callback=foo_pass)
     os.chmod(priv, 256)
@@ -68,9 +71,9 @@ class MasterKeys(dict):
         key = None
         try:
             key = RSA.load_key(self.rsa_path, callback=foo_pass)
-            log.debug('Loaded master key: %s', self.rsa_path)
+            log.debug('Loaded master key: {0}'.format(self.rsa_path))
         except:
-            log.info('Generating master key: %s', self.rsa_path)
+            log.info('Generating master key: {0}'.format(self.rsa_path))
             key = gen_keys(self.opts['pki_dir'], 'master', 4096)
         return key
 
@@ -113,9 +116,9 @@ class Auth(object):
         key = None
         try:
             key = RSA.load_key(self.rsa_path, callback=foo_pass)
-            log.debug('Loaded minion key: %s', self.rsa_path)
+            log.debug('Loaded minion key: {0}'.format(self.rsa_path))
         except:
-            log.info('Generating minion key: %s', self.rsa_path)
+            log.info('Generating minion key: {0}'.format(self.rsa_path))
             key = gen_keys(self.opts['pki_dir'], 'minion', 4096)
         return key
 
@@ -205,8 +208,9 @@ class Auth(object):
                 else:
                     log.error(
                         'The Salt Master has cached the public key for this '
-                        'node, this salt minion will wait for 10 seconds '
-                        'before attempting to re-authenticate'
+                        'node, this salt minion will wait for %s seconds '
+                        'before attempting to re-authenticate',
+                        self.opts['acceptance_wait_time']
                     )
                     return 'retry'
         if not self.verify_master(payload['pub_key'], payload['token']):
@@ -222,14 +226,6 @@ class Auth(object):
         auth['aes'] = self.decrypt_aes(payload['aes'])
         auth['publish_port'] = payload['publish_port']
         return auth
-
-
-class AuthenticationError(Exception):
-    '''
-    Custom exception class.
-    '''
-
-    pass
 
 
 class Crypticle(object):

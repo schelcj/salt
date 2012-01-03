@@ -11,17 +11,10 @@ import imp
 import logging
 import os
 import salt
+from salt.exceptions import LoaderError
 
 log = logging.getLogger(__name__)
 salt_base_path = os.path.dirname(salt.__file__)
-
-
-class LoaderError(Exception):
-    '''
-    Custom exception class.
-    '''
-
-    pass
 
 
 def minion_mods(opts):
@@ -84,7 +77,7 @@ def render(opts, functions):
     rend = load.filter_func('render', pack)
     if opts['renderer'] not in rend:
         err = ('The renderer {0} is unavailable, this error is often because '
-               'the needed software is unavailabe'.format(opts['renderer']))
+               'the needed software is unavailable'.format(opts['renderer']))
         log.critical(err)
         raise LoaderError(err)
     return rend
@@ -212,7 +205,7 @@ class Loader(object):
                 log.info('Cython is enabled in options put not present '
                          'on the system path. Skipping Cython modules.')
         for mod_dir in self.module_dirs:
-            if not mod_dir.startswith('/'):
+            if not os.path.isabs(mod_dir):
                 continue
             if not os.path.isdir(mod_dir):
                 continue
@@ -247,7 +240,7 @@ class Loader(object):
             mod.__grains__ = self.grains
 
             if pack:
-                if type(pack) == type(list()):
+                if isinstance(pack, list):
                     for chunk in pack:
                         setattr(mod, chunk['name'], chunk['value'])
                 else:
@@ -347,7 +340,7 @@ class Loader(object):
     def gen_grains(self):
         '''
         Read the grains directory and execute all of the public callable
-        members. then verify that the returns are python dict's and return a
+        members. Then verify that the returns are python dict's and return a
         dict containing all of the returned values.
         '''
         grains = {}
@@ -356,14 +349,14 @@ class Loader(object):
             if not key[key.index('.') + 1:] == 'core':
                 continue
             ret = fun()
-            if not type(ret) == type(dict()):
+            if not isinstance(ret, dict):
                 continue
             grains.update(ret)
         for key, fun in funcs.items():
             if key[key.index('.') + 1:] == 'core':
                 continue
             ret = fun()
-            if not type(ret) == type(dict()):
+            if not isinstance(ret, dict):
                 continue
             grains.update(ret)
         return grains

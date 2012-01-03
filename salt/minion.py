@@ -8,6 +8,7 @@ import contextlib
 import glob
 import logging
 import multiprocessing
+import hashlib
 import os
 import re
 import shutil
@@ -22,7 +23,7 @@ import urlparse
 import zmq
 
 # Import salt libs
-from salt.crypt import AuthenticationError
+from salt.exceptions import AuthenticationError, MinionError
 import salt.client
 import salt.crypt
 import salt.loader
@@ -40,13 +41,6 @@ log = logging.getLogger(__name__)
 # 4. Store the aes key
 # 5. connect to the publisher
 # 6. handle publications
-
-
-class MinionError(Exception):
-    '''
-    Custom exception class.
-    '''
-    pass
 
 
 class SMinion(object):
@@ -86,6 +80,10 @@ class Minion(object):
         self.mod_opts = self.__prep_mod_opts()
         self.functions, self.returners = self.__load_modules()
         self.matcher = Matcher(self.opts, self.functions)
+        if hasattr(self,'_syndic') and self._syndic:
+            log.warn('Starting the Salt Syndic Minion')
+        else:
+            log.warn('Starting the Salt Minion')
         self.authenticate()
 
     def __prep_mod_opts(self):
@@ -167,9 +165,9 @@ class Minion(object):
         if isinstance(data['fun'], str):
             if data['fun'] == 'sys.reload_modules':
                 self.functions, self.returners = self.__load_modules()
-                
+
         if self.opts['multiprocessing']:
-            if type(data['fun']) == type(list()):
+            if isinstance(data['fun'], list):
                 multiprocessing.Process(
                     target=lambda: self._thread_multi_return(data)
                 ).start()
@@ -178,7 +176,7 @@ class Minion(object):
                     target=lambda: self._thread_return(data)
                 ).start()
         else:
-            if type(data['fun']) == type(list()):
+            if isinstance(data['fun'], list):
                 threading.Thread(
                     target=lambda: self._thread_multi_return(data)
                 ).start()
@@ -196,10 +194,8 @@ class Minion(object):
         for ind in range(0, len(data['arg'])):
             try:
                 arg = eval(data['arg'][ind])
-                if isinstance(arg, str) \
-                        or isinstance(arg, list) \
-                        or isinstance(arg, int) \
-                        or isinstance(arg, dict):
+                types = (int, str, dict, list)
+                if type(arg) in types:
                     data['arg'][ind] = arg
                 else:
                     data['arg'][ind] = str(data['arg'][ind])
@@ -212,10 +208,10 @@ class Minion(object):
                 ret['return'] = self.functions[data['fun']](*data['arg'])
             except Exception as exc:
                 trb = traceback.format_exc()
-                log.warning('The minion function caused an exception: %s', exc)
+                log.warning('The minion function caused an exception: {0}'.format(exc))
                 ret['return'] = trb
         else:
-            ret['return'] = '"%s" is not available.' % function_name
+            ret['return'] = '"{0}" is not available.'.format(function_name)
 
         ret['jid'] = data['jid']
         ret['fun'] = data['fun']
@@ -238,11 +234,8 @@ class Minion(object):
             for index in range(0, len(data['arg'][ind])):
                 try:
                     arg = eval(data['arg'][ind][index])
-                    # FIXME: do away the ugly here...
-                    if isinstance(arg, str) \
-                            or isinstance(arg, list) \
-                            or isinstance(arg, int) \
-                            or isinstance(arg, dict):
+                    types = (str, int, list, dict)
+                    if type(arg) in types:
                         data['arg'][ind][index] = arg
                     else:
                         data['arg'][ind][index] = str(data['arg'][ind][index])
@@ -314,7 +307,7 @@ class Minion(object):
                 log.info('Authentication with master successful!')
                 break
             log.info('Waiting for minion key to be accepted by the master.')
-            time.sleep(10)
+            time.sleep(self.opts['acceptance_wait_time'])
         self.aes = creds['aes']
         self.publish_port = creds['publish_port']
         self.crypticle = salt.crypt.Crypticle(self.opts, self.aes)
@@ -390,6 +383,7 @@ class Syndic(salt.client.LocalClient, Minion):
     authenticate with a higher level master.
     '''
     def __init__(self, opts):
+        self._syndic = True
         salt.client.LocalClient.__init__(self, opts['_master_conf_file'])
         Minion.__init__(self, opts)
 
@@ -475,7 +469,7 @@ class Matcher(object):
         '''
         matcher = 'glob'
         for item in data:
-            if type(item) == type(dict()):
+            if isinstance(item, dict):
                 if 'match' in item:
                     matcher = item['match']
         if hasattr(self, matcher + '_match'):
@@ -507,7 +501,7 @@ class Matcher(object):
         '''
         Determines if this host is on the list
         '''
-        return bool(tgt.count(self.opts['id']))
+        return bool(tgt in self.opts['id'])
 
     def grain_match(self, tgt):
         '''
@@ -559,7 +553,7 @@ class Matcher(object):
                 comps = match.split('@')
                 matcher = ref.get(comps[0])
                 if not matcher:
-                    # If un unknown matcher is called at any time, fail out
+                    # If an unknown matcher is called at any time, fail out
                     return False
                 print comps
                 results.append(
@@ -603,7 +597,7 @@ class FileClient(object):
         Make sure that this path is intended for the salt master and trim it
         '''
         if not path.startswith('salt://'):
-            raise MinionError('Unsupported path')
+            raise MinionError('Unsupported path: {0}'.format(path))
         return path[7:]
 
     def get_file(self, path, dest='', makedirs=False, env='base'):
@@ -633,6 +627,19 @@ class FileClient(object):
             self.socket.send(self.serial.dumps(payload))
             data = self.auth.crypticle.loads(self.serial.loads(self.socket.recv()))
             if not data['data']:
+                if not fn_ and data['dest']:
+                    # This is a 0 byte file on the master
+                    dest = os.path.join(
+                        self.opts['cachedir'],
+                        'files',
+                        env,
+                        data['dest']
+                        )
+                    destdir = os.path.dirname(dest)
+                    if not os.path.isdir(destdir):
+                        os.makedirs(destdir)
+                    if not os.path.exists(dest):
+                        open(dest, 'w+').write(data['data'])
                 break
             if not fn_:
                 dest = os.path.join(
@@ -728,7 +735,19 @@ class FileClient(object):
         salt master file server prepend the path with salt://<file on server>
         otherwise, prepend the file with / for a local file.
         '''
-        path = self._check_proto(path)
+        try:
+            path = self._check_proto(path)
+        except MinionError:
+            if not os.path.isfile(path):
+                err = ('Specified file {0} is not present to generate '
+                        'hash').format(path)
+                log.warning(err)
+                return {}
+            else:
+                ret = {}
+                ret['hsum'] = hashlib.md5(open(path, 'rb').read()).hexdigest()
+                ret['hash_type'] = 'md5'
+                return ret
         payload = {'enc': 'aes'}
         load = {'path': path,
                 'env': env,

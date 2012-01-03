@@ -85,8 +85,8 @@ def sls(mods, env='base'):
     environment is base
 
     CLI Example:
-    
-        salt \* state.modules core,edit.vim dev
+
+        salt '*' state.sls core,edit.vim dev
     '''
     st_ = salt.state.HighState(__opts__)
     if isinstance(mods, str):
@@ -108,7 +108,7 @@ def top(topfn):
 
 def show_highstate():
     '''
-    Retrive the highstate data from the salt master and display it
+    Retrieve the highstate data from the salt master and display it
 
     CLI Example::
 

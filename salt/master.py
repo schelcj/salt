@@ -1,28 +1,28 @@
 '''
-This module contains all fo the routines needed to set up a master server, this
+This module contains all foo the routines needed to set up a master server, this
 involves preparing the three listeners and the workers needed by the master.
 '''
 
 # Import python modules
-import datetime
-import hashlib
-import logging
-import multiprocessing
 import os
 import re
-import shutil
-import tempfile
 import time
+import shutil
+import logging
+import hashlib
+import tempfile
+import datetime
+import multiprocessing
 
 # Import zeromq
-from M2Crypto import RSA
 import zmq
+from M2Crypto import RSA
 
 # Import salt modules
-import salt.client
 import salt.crypt
-import salt.payload
 import salt.utils
+import salt.client
+import salt.payload
 
 
 log = logging.getLogger(__name__)
@@ -76,7 +76,9 @@ class SMaster(object):
             return open(keyfile, 'r').read()
         else:
             key = salt.crypt.Crypticle.generate_key_string()
+            cumask = os.umask(191);
             open(keyfile, 'w+').write(key)
+            os.umask(cumask)
             os.chmod(keyfile, 256)
             return key
 
@@ -104,13 +106,16 @@ class Master(SMaster):
             for jid in os.listdir(jid_root):
                 if int(cur) - int(jid[:10]) > self.opts['keep_jobs']:
                     shutil.rmtree(os.path.join(jid_root, jid))
-            time.sleep(60)
+            try:
+                time.sleep(60)
+            except KeyboardInterrupt:
+                break
 
     def start(self):
         '''
         Turn on the master server components
         '''
-        log.info('Starting the Salt Master')
+        log.warn('Starting the Salt Master')
         multiprocessing.Process(target=self._clear_old_jobs).start()
         aes_funcs = AESFuncs(self.opts, self.crypticle)
         clear_funcs = ClearFuncs(
@@ -126,7 +131,13 @@ class Master(SMaster):
                 aes_funcs,
                 clear_funcs)
         reqserv.start_publisher()
-        reqserv.run()
+
+        try:
+            reqserv.run()
+        except KeyboardInterrupt:
+            # Shut the master down gracefully on SIGINT
+            log.warn('Stopping the Salt Master')
+            raise SystemExit('\nExiting on Ctrl-c')
 
 
 class Publisher(multiprocessing.Process):
@@ -135,7 +146,7 @@ class Publisher(multiprocessing.Process):
     commands.
     '''
     def __init__(self, opts):
-        multiprocessing.Process.__init__(self)
+        super(Publisher, self).__init__()
         self.opts = opts
 
     def run(self):
@@ -153,10 +164,14 @@ class Publisher(multiprocessing.Process):
         pub_sock.bind(pub_uri)
         pull_sock.bind(pull_uri)
 
-        while True:
-            package = pull_sock.recv()
-            log.info('Publishing command')
-            pub_sock.send(package)
+        try:
+            while True:
+                package = pull_sock.recv()
+                log.info('Publishing command')
+                pub_sock.send(package)
+        except KeyboardInterrupt:
+            pub_sock.close()
+            pull_sock.close()
 
 
 class ReqServer(object):
@@ -245,13 +260,16 @@ class MWorker(multiprocessing.Process):
             os.path.join(self.opts['sock_dir'], 'workers.ipc')
             )
         log.info('Worker binding to socket {0}'.format(w_uri))
-        socket.connect(w_uri)
+        try:
+            socket.connect(w_uri)
 
-        while True:
-            package = socket.recv()
-            payload = self.serial.loads(package)
-            ret = self.serial.dumps(self._handle_payload(payload))
-            socket.send(ret)
+            while True:
+                package = socket.recv()
+                payload = self.serial.loads(package)
+                ret = self.serial.dumps(self._handle_payload(payload))
+                socket.send(ret)
+        except KeyboardInterrupt:
+            socket.close()
 
     def _handle_payload(self, payload):
         '''
@@ -289,7 +307,7 @@ class MWorker(multiprocessing.Process):
         except:
             return ''
         if 'cmd' not in data:
-            log.error('Recieved malformed command {0}'.format(data))
+            log.error('Received malformed command {0}'.format(data))
             return {}
         log.info('AES payload received with command {0}'.format(data['cmd']))
         return self.aes_funcs.run_func(data['cmd'], data)
@@ -440,7 +458,7 @@ class AESFuncs(object):
 
     def _syndic_return(self, load):
         '''
-        Recieve a syndic minion return and format it to look like returns from
+        Receive a syndic minion return and format it to look like returns from
         individual minions.
         '''
         # Verify the load
@@ -487,10 +505,13 @@ class AESFuncs(object):
         # If the command will make a recursive publish don't run
         if re.match('publish.*', clear_load['fun']):
             return {}
-        # Check the permisions for this minion
+        # Check the permissions for this minion
         if not self.__verify_minion(clear_load['id'], clear_load['tok']):
             # The minion is not who it says it is!
             # We don't want to listen to it!
+            jid = clear_load['jid']
+            msg = 'Minion id {0} is not who it says it is!'.format(jid)
+            log.warn(msg)
             return {}
         perms = set()
         for match in self.opts['peer']:
@@ -563,7 +584,7 @@ class ClearFuncs(object):
     Set up functions that are safe to execute when commands sent to the master
     without encryption and authentication
     '''
-    # The ClearFuncs object encasulates the functions that can be executed in
+    # The ClearFuncs object encapsulates the functions that can be executed in
     # the clear:
     # publish (The publish from the LocalClient)
     # _auth
@@ -674,6 +695,7 @@ class ClearFuncs(object):
             pass
         else:
             # Something happened that I have not accounted for, FAIL!
+            log.warn('Unaccounted for authentication failure')
             return {'enc': 'clear',
                     'load': {'ret': False}}
 

@@ -26,7 +26,7 @@ def add(name,
 
         salt '*' user.add name <uid> <gid> <groups> <home> <shell>
     '''
-    if type(groups) == type(str()):
+    if isinstance(groups, basestring):
         groups = groups.split(',')
     cmd = 'useradd -s {0} '.format(shell)
     if uid:
@@ -170,7 +170,7 @@ def chgroups(name, groups, append=False):
 
         salt '*' user.chgroups foo wheel,root True
     '''
-    if type(groups) == type(str()):
+    if isinstance(groups, basestring):
         groups = groups.split(',')
     ugrps = set(list_groups(name))
     if ugrps == set(groups):
@@ -216,7 +216,7 @@ def info(name):
 
 def list_groups(name):
     '''
-    Return a list of groups the named user belings to
+    Return a list of groups the named user belongs to
 
     CLI Example::
 

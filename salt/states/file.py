@@ -2,7 +2,7 @@
 File Management
 ===============
 
-Salt States can agresively manipulate files on a system. There are a number of
+Salt States can aggressively manipulate files on a system. There are a number of
 ways in which files can be managed.
 
 Regular files can be enforced with the ``managed`` function. This function
@@ -21,9 +21,14 @@ makes use of the jinja templating system would look like this:
         - group: root
         - mode: 644
         - template: jinja
+        - context:
+          custom_var: "override"
+        - defaults:
+          custom_var: "default value"
+          other_var: 123
 
 Directories can be managed via the ``directory`` function. This function can
-create and enforce the premissions on a directory. A directory statement will
+create and enforce the permissions on a directory. A directory statement will
 look like this:
 
 .. code-block:: yaml
@@ -48,7 +53,7 @@ takes a few arguments
 
 Recursive directory management can also be set via the ``recurse``
 function. Recursive directory management allows for a directory on the salt
-master to be recursively coppied down to the minion. This is a great tool for
+master to be recursively copied down to the minion. This is a great tool for
 deploying large code and configuration systems. A recuse state would look
 something like this:
 
@@ -88,7 +93,7 @@ def _is_bin(path):
 
 def _gen_keep_files(name, require):
     '''
-    Generate the list of files that need to be kept when a dir based cunction
+    Generate the list of files that need to be kept when a dir based function
     like directory or recurse has a clean.
     '''
     keep = set()
@@ -138,7 +143,7 @@ def _clean_dir(root, keep):
     return list(removed)
 
 
-def _mako(sfn, name, source, user, group, mode, env):
+def _mako(sfn, name, source, user, group, mode, env, context=None):
     '''
     Render a mako template, returns the location of the rendered file,
     return False if render fails.
@@ -154,7 +159,7 @@ def _mako(sfn, name, source, user, group, mode, env):
                 'data': 'Failed to import jinja'}
     try:
         tgt = tempfile.mkstemp()[1]
-        passthrough = {}
+        passthrough = context if context else {}
         passthrough.update(__salt__)
         passthrough.update(__grains__)
         template = Template(open(sfn, 'r').read())
@@ -167,7 +172,7 @@ def _mako(sfn, name, source, user, group, mode, env):
                 'data': trb}
 
 
-def _jinja(sfn, name, source, user, group, mode, env):
+def _jinja(sfn, name, source, user, group, mode, env, context=None):
     '''
     Render a jinja2 template, returns the location of the rendered file,
     return False if render fails.
@@ -177,13 +182,13 @@ def _jinja(sfn, name, source, user, group, mode, env):
          'data': <Error data or rendered file path>}
     '''
     try:
-        from jinja2 import Template
+        from salt.utils.jinja import get_template
     except ImportError:
         return {'result': False,
                 'data': 'Failed to import jinja'}
     try:
         tgt = tempfile.mkstemp()[1]
-        passthrough = {}
+        passthrough = context if context else {}
         passthrough['salt'] = __salt__
         passthrough['grains'] = __grains__
         passthrough['name'] = name
@@ -192,7 +197,7 @@ def _jinja(sfn, name, source, user, group, mode, env):
         passthrough['group'] = group
         passthrough['mode'] = mode
         passthrough['env'] = env
-        template = Template(open(sfn, 'r').read())
+        template = get_template(sfn, __opts__, env)
         open(tgt, 'w+').write(template.render(**passthrough))
         return {'result': True,
                     'data': tgt}
@@ -257,7 +262,7 @@ def symlink(name, target, force=False, makedirs=False):
             shutil.rmtree(name)
         else:
             ret['result'] = False
-            ret['comment'] = ('Direcotry exists where the symlink {0} '
+            ret['comment'] = ('Directory exists where the symlink {0} '
                               'should be'.format(name))
             return ret
     if not os.path.exists(name):
@@ -311,6 +316,8 @@ def managed(name,
         mode=None,
         template=None,
         makedirs=False,
+        context=None,
+        defaults=None,
         __env__='base'):
     '''
     Manage a given file, this function allows for a file to be downloaded from
@@ -342,10 +349,16 @@ def managed(name,
         supported
 
     makedirs
-        If the file is located in a path without a parent directory, then the
+        If the file is located in a path without a parent directory, then
         the state will fail. If makedirs is set to True, then the parent
         directories will be created to facilitate the creation of the named
         file.
+
+    context
+        Overrides default context variables passed to the template.
+
+    defaults
+        Default context passed to the template.
     '''
     if mode:
         mode = str(mode)
@@ -360,6 +373,8 @@ def managed(name,
         sfn = __salt__['cp.cache_file'](source, __env__)
         t_key = '_{0}'.format(template)
         if t_key in globals():
+            context_dict = defaults if defaults else {}
+            if context: context_dict.update(context)
             data = globals()[t_key](
                     sfn,
                     name,
@@ -367,7 +382,8 @@ def managed(name,
                     user,
                     group,
                     mode,
-                    __env__
+                    __env__,
+                    context_dict
                     )
         else:
             ret['result'] = False
@@ -409,10 +425,11 @@ def managed(name,
             else:
                 slines = open(sfn, 'rb').readlines()
                 nlines = open(name, 'rb').readlines()
-                ret['changes']['diff'] = ('\n'.join(difflib
-                                                    .unified_diff(slines,
-                                                                  nlines)))
-            # Pre requs are met, and the file needs to be replaced, do it
+                # Print a diff equivalent to diff -u old new
+                ret['changes']['diff'] = (''.join(difflib
+                                                    .unified_diff(nlines,
+                                                                  slines)))
+            # Pre requisites are met, and the file needs to be replaced, do it
             if not __opts__['test']:
                 shutil.copy(sfn, name)
         # Check permissions
@@ -562,10 +579,10 @@ def directory(name,
 
     makedirs
         If the directory is located in a path without a parent directory, then
-        the the state will fail. If makedirs is set to True, then the parent
+        the state will fail. If makedirs is set to True, then the parent
         directories will be created to facilitate the creation of the named
         file.
-    
+
     clean
         Make sure that only files that are set up by salt and required by this
         function are kept. If this option is set then everything in this
@@ -579,7 +596,7 @@ def directory(name,
            'comment': ''}
     if os.path.isfile(name):
         ret['result'] = False
-        ret['comment'] = ('Specifed location {0} exists and is a file'
+        ret['comment'] = ('Specified location {0} exists and is a file'
                           .format(name))
         return ret
     if not os.path.isdir(name):
